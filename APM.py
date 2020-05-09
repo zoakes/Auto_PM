@@ -27,9 +27,9 @@ SE = []
 EOD_EXIT = False
 TIMEOUT = 10 #Seconds
 
-ep = 'https://paper-api.alpaca.markets'
-api_key = 'PK4LB1H4BH7YUF4XOODN'
-secret_key = '7EuTmI/C/7FwtNkEzqzFD7yiVMqaI16XfuerzHgR'
+ep = 'https://paper-api.alpaca.markets' #Currently on Paper
+api_key = 'API_KEY_HERE' 
+secret_key = '_SECRET_KEY_HERE' 
 
 
 class PortfolioManager():

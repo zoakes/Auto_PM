@@ -32,8 +32,8 @@ EOD_EXIT = False
 TIMEOUT = 120 #Seconds
 
 ep = 'https://paper-api.alpaca.markets'
-api_key = 'PK4LB1H4BH7YUF4XOODN'
-secret_key = '7EuTmI/C/7FwtNkEzqzFD7yiVMqaI16XfuerzHgR'
+api_key = 'YOUR_API_KEY'
+secret_key = 'YOUR_SECRET_KEY'
 
 
 class PortfolioManager():

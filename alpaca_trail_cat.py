@@ -34,8 +34,8 @@ TOTAL_CATSTOP =  0 #-1000
 CATSTOP = 0 #-100   
 
 ep = 'https://paper-api.alpaca.markets'
-api_key = 'PK4LB1H4BH7YUF4XOODN'
-secret_key = '7EuTmI/C/7FwtNkEzqzFD7yiVMqaI16XfuerzHgR'
+api_key = 'API_KEY'
+secret_key = 'SECRET_KEY'
 
 
 def every(delay,task):

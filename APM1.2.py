@@ -34,8 +34,8 @@ _MIN = 5
 _MAX = 450 #Use Allocation as Max -- 100k/200 == 500
 
 ep = 'https://paper-api.alpaca.markets'
-api_key = 'PK4LB1H4BH7YUF4XOODN'
-secret_key = '7EuTmI/C/7FwtNkEzqzFD7yiVMqaI16XfuerzHgR'
+api_key = 'API_KEY'
+secret_key = 'SECRET_KEY'
 
 
 class PortfolioManager():

@@ -11,6 +11,7 @@ Version 1.0.3:
     5.07.20 -- Added Short support, and OO run functions to simplify execution
     5.07.20 -- Resolved LISTS from Parse function (Not NDArray)
     5.08.20 -- Added Universe Filtering (10 - 1k, sorted by volume), 200 total entries
+    5.08.20 -- Added order / execution type Parameter (block, send, timeout (Default))
     
 """
 
@@ -25,22 +26,26 @@ LE = []
 SE = []
 
 EOD_EXIT = False
-TIMEOUT = 10 #Seconds
+TIMEOUT = 120 #Seconds
 
-ep = 'https://paper-api.alpaca.markets' #Currently on Paper
-api_key = 'API_KEY_HERE' 
-secret_key = '_SECRET_KEY_HERE' 
+_MIN = 5
+_MAX = 450
+
+ep = 'https://paper-api.alpaca.markets'
+api_key = 'PK4LB1H4BH7YUF4XOODN'
+secret_key = '7EuTmI/C/7FwtNkEzqzFD7yiVMqaI16XfuerzHgR'
 
 
 class PortfolioManager():
     def __init__(self):
         self.api = tradeapi.REST(base_url = ep, key_id = api_key, secret_key=secret_key)
         
-        self.long_OK = self.get_tickers(min_price=10,max_price=1000,etb=False)
-        self.short_OK = self.get_tickers(min_price=10,max_price=1000,etb=True)
+        self.long_OK = self.get_tickers(min_price=_MIN,max_price=_MAX,etb=False)
+        self.short_OK = self.get_tickers(min_price=_MIN,max_price=_MAX,etb=True)
         
         #self.ETB = self.short_OK
         self.r_positions = {}
+        self.fill_history = {}
 
     def format_percent(self, num):
         if(str(num)[-1] == "%"):
@@ -286,7 +291,7 @@ class PortfolioManager():
         
         
     '''Zach Additions ------------ 1.0'''
-    def format_holdings(self,longs=[],shorts=[]):
+    def format_holdings(self,longs=[],shorts=[],even_qty=False):
         '''Returns proper format for PF Weights'''
 
         #longs = ['SPY','GLD','AMZN']
@@ -295,16 +300,27 @@ class PortfolioManager():
         #account = self.api.get_account()
         #portfolio_val = float(account.portfolio_value) 
         
-        qty = float(1.0 / (len(longs) + len(shorts)))
+        #print(len(shorts),len(longs))
+        #print(len(LE),len(SE))
         
+        qty = float(1.0 / (len(longs) + len(shorts) + 1))                     #Ensure all fit, Eliminate DBZ errors
+        
+        if even_qty:
+            qty_l = float( .5 / (len(longs) + 1))
+            qty_s = -1 * float( .5 / (len(shorts) + 1))
+        else:
+            qty_l = qty 
+            qty_s = -qty
+            
+        print(f'LQty {qty_l} : SQty {qty_s}')                  
         arg = []
         if len(longs) > 0:
             for l in longs:
-                arg.append([l,qty])
+                arg.append([l,qty_l])
                 
         if len(shorts) > 0:
             for s in shorts:
-                arg.append([s,-qty])
+                arg.append([s,qty_s])
 
 
         return arg
@@ -325,28 +341,41 @@ class PortfolioManager():
         
         #LE's
         strong = DF[DF['RA_T'] >= 5]
+        #print(strong.shape)
         mu = DF['P_Change'].mean()
         sig = DF['P_Change'].std()
         no_out = strong[strong['P_Change'] <= (mu+sig)]
+        #print(no_out.shape)
         
         #SE's 
         weak = DF[DF['RA_T'] <= -5]
         #short_new = weak[weak['P_Change'] <= (mu+sig)]
         
+        #LE = strong.SYMBOL.to_list()                                       #Change to STRONG to ensure 100!
         LE = no_out.SYMBOL.to_list()
         SE = weak.SYMBOL.to_list()
+        #print('No sort/filter: ',len(LE))
         
         '''To Go back to original, COMMENT NEXT 4 LINES '''
         
         shorts_by_volume = [ticker for ticker in self.short_OK if ticker in SE]     #Sorted SIGNALS by Volume!
         longs_by_volume = [ticker for ticker in self.long_OK if ticker in LE]
         
+        print('Base LongsByVol (w pct filt): ',len(longs_by_volume))
+        if len(longs_by_volume) < 100:
+            print('Not using pct Filter today...')
+            LE = strong.SYMBOL.to_list()
+            longs_by_volume = [ticker for ticker in self.long_OK if ticker in LE]
+            #if len(longs_by_volume) < 100:
+                #Could check ALL tickers?
+                
+        
         LE = longs_by_volume[:100]
         SE = shorts_by_volume[:100]
         
         return LE, SE
     
-    def run(self,path=None):
+    def run(self,path=None,order='timeout'):                                    #Added Param!!
         #from portfolio_manager import PortfolioManager
         #ep = 'https://paper-api.alpaca.markets'
         #api_key = 'PK4LB1H4BH7YUF4XOODN'
@@ -370,7 +399,7 @@ class PortfolioManager():
             now = dt.datetime.now()
 
         
-            if now.hour == 8 and now.minute < 30:                            #Temporarily 10 / OR
+            if now.hour == 8: #and now.minute < 30:                            
                 if not warm_up:
                     print(f'Algorithm Warming up...')
                     LE, SE = self.parse(path)
@@ -385,7 +414,7 @@ class PortfolioManager():
                         
                         
                        
-            if now.hour == 8 and now.minute >= 30 and warm_up:                 #temp change11 /  OR
+            if now.hour == 8 and now.minute >= 30 and warm_up:                 
                 print('Algorithm Open for Day')
                 open = True
                 
@@ -401,7 +430,7 @@ class PortfolioManager():
                 break
 
             if open:
-                manager.percent_rebalance('timeout')
+                manager.percent_rebalance(order)                                #Paramterized THIS
                 return 0
             
         return -1
@@ -447,44 +476,131 @@ class PortfolioManager():
         return f'{len(rejected)} Orders Rejected.'
     
     
-    def get_tickers(self,min_price=5,max_price=50,etb=True):
+    def get_tickers(self,min_price=10,max_price=500,etb=True):
         '''
         Returns JSON element (sort_lst) or (uses ticker.ticker for t in res lc)
         SORTED BY VOLUME
         '''
         print('Getting current ticker data...')
-        tickers = self.api.polygon.all_tickers() #ALLLLLL SYMBOLS ! 
+        tickers = self.api.polygon.all_tickers() #ALL SYMBOLS 
         print('All symbols loaded')
         assets = self.api.list_assets()
-        if etb: #FILTER TRADABLE SYMBOLS; easy to borrow if switch True
+        if etb: #FILTER TRADABLE SYMBOLS; easy to borrow if true
             symbols = [asset.symbol for asset in assets if asset.tradable and asset.easy_to_borrow]
         else:
             symbols = [asset.symbol for asset in assets if asset.tradable] 
-        #print(tickers)
-        sort_lst = sorted([ticker for ticker in tickers if ( #JUST return ticker if you want full JSON object
+        
+        #JUST return sort_lst if you want full JSON object -- else return LC
+        sort_lst = sorted([ticker for ticker in tickers if ( 
             ticker.ticker in symbols and
             ticker.lastTrade['p'] >= min_price and
-            ticker.lastTrade['p'] <= max_price and
-            ticker.prevDay['v'] * ticker.lastTrade['p'] > 500000 #and
+            ticker.lastTrade['p'] <= max_price #and
+            #ticker.prevDay['v'] * ticker.lastTrade['p'] > 500000 #and
             #ticker.todaysChangePerc <= 3.5
         )], key = lambda t: t.prevDay['v'], reverse=True)
         
         return [ticker.ticker for ticker in sort_lst]
     
+    
+    def calc_return(self,path,slip_usd=3,fill_pct=.8,usd=False):
+        global LE, SE
+        df = pd.read_csv(path,header=None)
+        df.columns = ['Exchange','SYMBOL','RA_Y','RA_T','Close','P_Change']
+        positions = len(LE) + len(SE)
+        total_l, total_s = 0,0
+        for i in df.itertuples():
+            if i.SYMBOL in LE:
+                total_l += 500 * (i.P_Change/100)
+            elif i.SYMBOL in SE:
+                total_s += -500 * (i.P_Change/100)
+        
+        total_usd = total_l + total_s
+        
+        real_usd = total_usd * fill_pct - (slip_usd * positions) 
+        if usd:
+            return real_usd 
+        return (real_usd / 100000) * 100 
+    
+    def get_fill_data(self):
+        '''
+
+        Parameters
+        ----------
+        LE, SE: global list of long/ short entries for day
+            If not specified, uses Global.
+
+        Returns
+        -------
+        float fill_pct
+            percent of fills today out of total signals (200).
+            1% = 1
+        float partial_pct
+            percent of partial fills today out of total orders.
+        '''
+        #if LE or SE is None:
+        global LE, SE
+        
+        #if dt.datetime.now().hour <= 8 and dt.datetime.now().minute <= 45:
+        #    self.log('Check for fill data after 8:45AM')
+        #    return -1
+        
+        #Total Position Metrics
+        n_pos = len(self.api.list_positions())
+        n = len(LE) + len(SE)               
+        fill_pct = (n_pos / n) * 100
+        
+        print(f'Number Positions: {n} -- Fills: {fill_pct} %')
+        
+        #Partial Position Metrics -- this doesnt quite work right...
+        partial_fills = len(self.api.list_orders(status='partially_filled'))
+        partial_pct = (partial_fills / n_pos) * 100
+        #long_orders = self.api.list_orders(side='buy')
+        
+        print(f'Total Partial Fills: {partial_fills} -- PF Pct {partial_pct} %')
+ 
+                
+        td = dt.datetime.today()
+        self.fill_history[td] = [fill_pct,partial_pct]                          #Not sure if will work ? 
+        
+
+        return fill_pct, partial_pct
+    
             
 ###############################################################################
      
 if __name__ == '__main__':
-    
+    t1 = time.time_ns()
+
     manager = PortfolioManager()
     
-    path = '/Users/zoakes/Desktop/rankanalysis_05-07-2020.csv'
+    path = '/Users/zoakes/Desktop/rank/rankanalysis_05-14-2020.csv'
     LE, SE = manager.parse(path)
-    print(LE,SE)
-    
-    arg = manager.format_holdings(LE,SE) #Works
     
     
-    manager.run(path)  #Time not correct, so not running  : )
+    #An Extra Check
+    y = dt.datetime.now() - dt.timedelta(days=1)
+    if y.hour < 10:
+        assert (path[-14:-4] == y.strftime('%m-%d-%Y')) , 'Check that CSV is current date' 
+    
+    print(f'LE: {len(LE)} \n {LE} \n  SE: {len(SE)} \n {SE}')
+    
+    #arg = manager.format_holdings(LE,SE) #Works -- Add True to split evenly between longs and shorts
+    #print('Short OK:')
+    #print(manager.short_OK)
+    
+    #manager.calc_return(path)
+    
+    
+    '''to run -- uncomment below '''
+    #manager.run(path,order='send')                     #Time not correct, so not running  : ) #Trying BLOCK
+    
+    #manager.get_fill_data()
+
     
     #manager.liquidate_all()
+    
+    '''
+    To Run Algorithm ... 
+    1. Check path is to current date
+    2.Confirm manager = PortfolioManager() and manager.run() lines are uncommented
+    '''

@@ -22,46 +22,53 @@ import time
 import os
 import datetime as dt
 import pandas as pd
-
 import logging
+
 
 LE = []
 SE = []
 
 EOD_EXIT = False
 TIMEOUT = 120 #Seconds
+_MIN = 5
+_MAX = 450 #Use Allocation as Max -- 100k/200 == 500
 
 ep = 'https://paper-api.alpaca.markets'
-api_key = 'YOUR_API_KEY'
-secret_key = 'YOUR_SECRET_KEY'
+api_key = 'PK4LB1H4BH7YUF4XOODN'
+secret_key = '7EuTmI/C/7FwtNkEzqzFD7yiVMqaI16XfuerzHgR'
 
 
 class PortfolioManager():
+    
     def __init__(self):
         self.api = tradeapi.REST(base_url = ep, key_id = api_key, secret_key=secret_key)
+        self.logger = logging.getLogger(__name__)
         
-        self.long_OK = self.get_tickers(min_price=10,max_price=10000,etb=False)
-        self.short_OK = self.get_tickers(min_price=10,max_price=1000,etb=True)
+        self.long_OK = self.get_tickers(min_price = _MIN, max_price = _MAX,etb=False)
+        self.short_OK = self.get_tickers(min_price = _MIN, max_price = _MAX,etb=True)
         
         #self.ETB = self.short_OK
         self.r_positions = {}
-        
-        #Logging
-        self.logger = logging.getLogger(__name__)
+        self.fill_history = {}
+        n = dt.datetime.now()
+        ns = n.strftime('%m-%d-%Y')
         self.logger.setLevel(logging.INFO)
-        self.handler = logging.FileHandler('APM1.2.py.log')
+        self.handler = logging.FileHandler(f'APM1.2.py_{ns}_.log')
         self.handler.setLevel(logging.INFO)
         self.formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         self.handler.setFormatter(self.formatter)
         self.logger.addHandler(self.handler)
         self.logger.info('Starting log at {}'.format(dt.datetime.now()))
+
         
     def log(self, msg=""):
         """Add log to output file"""
         self.logger.info(msg)
         #if not USING_NOTEBOOK:                                                 #CHGD
         print(msg)
+        
+
 
     def format_percent(self, num):
         if(str(num)[-1] == "%"):
@@ -130,8 +137,8 @@ class PortfolioManager():
                 qty = self.r_positions.get(
                     sym)[0] - self.r_positions.get(sym)[1]
                 
-                self.log('Testing self.r_positions',self.r_positions.get(sym)[0], self.r_positions.get(sym)[1])
-                self.log('Testing looped -- qty:',qty)
+                print('Testing self.r_positions',self.r_positions.get(sym)[0], self.r_positions.get(sym)[1])
+                print('Testing looped -- qty:',qty)
                 threads.append(
                     threading.Thread(
                         target=self.timeout_execution, args=(
@@ -367,11 +374,16 @@ class PortfolioManager():
         
         LE = no_out.SYMBOL.to_list()
         SE = weak.SYMBOL.to_list()
-        
-        '''To Go back to original, COMMENT NEXT 4 LINES '''
+    
         
         shorts_by_volume = [ticker for ticker in self.short_OK if ticker in SE]     #Sorted SIGNALS by Volume!
         longs_by_volume = [ticker for ticker in self.long_OK if ticker in LE]
+        
+        #Ensure ALWAYS 100 ! (or as close as possible!)
+        if len(longs_by_volume) < 100:
+            print('Not using pct Filter today...')
+            LE = strong.SYMBOL.to_list()
+            longs_by_volume = [ticker for ticker in self.long_OK if ticker in LE]
         
         LE = longs_by_volume[:100]
         SE = shorts_by_volume[:100]
@@ -387,6 +399,7 @@ class PortfolioManager():
         #ep = 'https://paper-api.alpaca.markets'
         #api_key = 'PK4LB1H4BH7YUF4XOODN'
         #secret_key = '7EuTmI/C/7FwtNkEzqzFD7yiVMqaI16XfuerzHgR'
+        global LE, SE
 
         os.environ['APCA_API_KEY_ID'] = api_key
         os.environ['APCA_API_SECRET_KEY'] = secret_key
@@ -406,11 +419,12 @@ class PortfolioManager():
             now = dt.datetime.now()
 
         
-            if now.hour == 8: #and now.minute < 30:                            
+            if now.hour == 8 and now.minute >= 35:                            
                 if not warm_up:
                     self.log(f'Algorithm Warming up...')
+                    #if SKIP_WARM_UP is False:
                     LE, SE = self.parse(path)
-                    self.log(f'Parsed LE {len(LE)} and SE {len(SE)}')
+                    #self.log(f'Parsed LE {len(LE)} and SE {len(SE)}')
                     
                     arg = self.format_holdings(LE,SE,even_qty)                #Added parameterization for Even Qty Split                           
                     manager.add_items(arg)
@@ -421,7 +435,7 @@ class PortfolioManager():
                         
                         
                        
-            if now.hour == 8 and now.minute >= 30 and warm_up:                 
+            if now.hour == 8 and now.minute >= 35 and warm_up:                 
                 self.log('Algorithm Open for Day')
                 open = True
                 
@@ -437,7 +451,10 @@ class PortfolioManager():
                 break
 
             if open:
+                self.log(f'Begin Execution: {dt.datetime.now()}')
                 manager.percent_rebalance(order)                                #Paramterized THIS
+                #self.get_fill_data(LE,SE)                                    #Try uncommenting to see if this works 
+                #^^ could be too soon after?
                 return 0
             
         return -1
@@ -508,6 +525,50 @@ class PortfolioManager():
         
         return [ticker.ticker for ticker in sort_lst]
     
+    def get_fill_data(self):
+        '''
+
+        Parameters
+        ----------
+        LE, SE: global list of long/ short entries for day
+            If not specified, uses Global.
+
+        Returns
+        -------
+        float fill_pct
+            percent of fills today out of total signals (200).
+            1% = 1
+        float partial_pct
+            percent of partial fills today out of total orders.
+        '''
+        global LE, SE
+        
+        #if dt.datetime.now().hour <= 8 and dt.datetime.now().minute <= 45:
+        #    self.log('Check for fill data after 8:45AM')
+        #    return -1
+        
+        #Total Position Metrics
+        n_pos = len(self.api.list_positions())
+        n = len(LE) + len(SE)               
+        fill_pct = (n_pos / n) * 100
+        
+        self.log(f'Number Positions: {n} -- Fills: {fill_pct} %')
+        
+        #Partial Position Metrics
+        partial_fills = len(self.api.list_orders(status='partially_filled'))
+        partial_pct = (partial_fills / n_pos) * 100
+        #long_orders = self.api.list_orders(side='buy')
+        
+        #self.log(f'Total Partial Fills: {partial_fills} -- PF Pct {partial_pct} %')
+ 
+                
+        td = dt.datetime.today()
+        self.fill_history[td] = [fill_pct,partial_pct]                          #Not sure if will work ? 
+        
+
+        return fill_pct, partial_pct
+    
+    
             
 ###############################################################################
      
@@ -516,26 +577,40 @@ if __name__ == '__main__':
 
     manager = PortfolioManager()
     
-    path = '/Users/zoakes/Desktop/rank/rankanalysis_05-08-2020.csv'
-    LE, SE = manager.parse(path)
+    path = '/Users/zoakes/Desktop/rank/rankanalysis_05-14-2020.csv'
+    
+    #An Extra Check (If AM, day of -- around Entry time)
+    y = dt.datetime.now() - dt.timedelta(days=1)
+    if y.hour < 10:
+        assert (path[-14:-4] == y.strftime('%m-%d-%Y')) , 'Check that CSV is current date' 
+    
 
     
-    #An Extra Check
-    #assert (path[-14:-4] == dt.datetime.now().strftime('%m-%d-%Y')) , 'Check that CSV is current date'  
+    SKIP_WARM_UP = False              #True skips today warmup   
+           
+    if SKIP_WARM_UP is False:
+        LE, SE = manager.parse(path)  
 
-    print(f'LE: {len(LE)} \n {LE} \n  SE: {len(SE)} \n {SE}')
+    manager.log(f'LE: {len(LE)} \n {LE} \n  SE: {len(SE)} \n {SE}')
     
-    arg = manager.format_holdings(LE,SE) #Works -- Add True to split evenly between longs and shorts
+    #arg = manager.format_holdings(LE,SE) #Works -- Add True to split evenly between longs and shorts
     #print('Short OK:')
     #print(manager.short_OK)
     
+    '''
+    To Run Algorithm ... 
+    
+    1. Check path is to PREVIOUS date
+    2.Confirm manager = PortfolioManager() and manager.run() lines are uncommented
+    '''
 
-    manager.run(path,order='block',even_qty=False)  #Time not correct, so not running  : ) #Trying BLOCK
+
+    manager.run(path,order='send',even_qty=False)  #Only Enters if hour == 8 #Trying BLOCK vs TIMEOUT
     
     #manager.liquidate_all()
     
-    '''
-    To Run Algorithm ... 
-    1. Check path is to current date
-    2.Confirm manager = PortfolioManager() and manager.run() lines are uncommented
-    '''
+    #To check on fills after execution
+    manager.get_fill_data()
+
+
+    

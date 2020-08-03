@@ -51,8 +51,8 @@ TOTAL_TGT = 0
 
 
 ep = 'https://paper-api.alpaca.markets'
-api_key = 'PK4LB1H4BH7YUF4XOODN'
-secret_key = '7EuTmI/C/7FwtNkEzqzFD7yiVMqaI16XfuerzHgR'
+api_key = 'KEY'
+secret_key = 'SKEY'
 
 
 def every(delay,task):

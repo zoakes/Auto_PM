@@ -13,6 +13,8 @@ Version 1.2.3:
     5.08.20 -- Added Universe Filtering (10 - 1k, sorted by volume), 200 total entries
     5.08.20 -- Added order / execution type Parameter (block, send, timeout (Default))
     5.11.20 -- Added Logging features
+    5.15.20 -- Added SHORTS global, and block to rm pct filter on longs
+
     
 """
 
@@ -23,6 +25,7 @@ import os
 import datetime as dt
 import pandas as pd
 import logging
+import sys
 
 
 LE = []
@@ -31,11 +34,13 @@ SE = []
 EOD_EXIT = False
 TIMEOUT = 120 #Seconds
 _MIN = 5
-_MAX = 450 #Use Allocation as Max -- 100k/200 == 500
+_MAX = 850 #Use Allocation as Max -- 100k/200 == 500
+
+SHORTS = 0 #CHANGE MAX WHEN THIS CHANGES!
 
 ep = 'https://paper-api.alpaca.markets'
-api_key = 'API_KEY'
-secret_key = 'SECRET_KEY'
+api_key = 'PK4LB1H4BH7YUF4XOODN'
+secret_key = '7EuTmI/C/7FwtNkEzqzFD7yiVMqaI16XfuerzHgR'
 
 
 class PortfolioManager():
@@ -335,6 +340,7 @@ class PortfolioManager():
             qty_l = qty 
             qty_s = -qty
             
+        print('QTY -- ',qty, qty_l)
         self.log(f'LQty {qty_l} : SQty {qty_s}')                  
         arg = []
         if len(longs) > 0:
@@ -374,7 +380,9 @@ class PortfolioManager():
         
         LE = no_out.SYMBOL.to_list()
         SE = weak.SYMBOL.to_list()
-    
+        
+        #Could re - call self.long_OK + self.short_OK here ? (rather than in run...)
+        
         
         shorts_by_volume = [ticker for ticker in self.short_OK if ticker in SE]     #Sorted SIGNALS by Volume!
         longs_by_volume = [ticker for ticker in self.long_OK if ticker in LE]
@@ -386,7 +394,7 @@ class PortfolioManager():
             longs_by_volume = [ticker for ticker in self.long_OK if ticker in LE]
         
         LE = longs_by_volume[:100]
-        SE = shorts_by_volume[:100]
+        SE = shorts_by_volume[:SHORTS]
         
         return LE, SE
     
@@ -399,7 +407,7 @@ class PortfolioManager():
         #ep = 'https://paper-api.alpaca.markets'
         #api_key = 'PK4LB1H4BH7YUF4XOODN'
         #secret_key = '7EuTmI/C/7FwtNkEzqzFD7yiVMqaI16XfuerzHgR'
-        global LE, SE
+        #global LE, SE                                                          #Removed So it RECHECKS -- INSTEAD used locals (lowercase)
 
         os.environ['APCA_API_KEY_ID'] = api_key
         os.environ['APCA_API_SECRET_KEY'] = secret_key
@@ -407,39 +415,54 @@ class PortfolioManager():
         #manager = PortfolioManager()
 
         now = dt.datetime.now()
-        if now.hour < 8:
-            self.log('Waiting for Warmup + Market Open') 
+        self.log('Waiting for Warmup + Market Open...') 
+        while True:                                                              #NEW CHECK
+            time.sleep(5)
+            now = dt.datetime.now()
+            if now.minute >= 35 and now.hour >= 8:
+                break
         
         
         open = False
         warm_up = False
-        
+        self.log('Market Open.')
         while(True):
             
             now = dt.datetime.now()
 
-        
-            if now.hour == 8 and now.minute >= 35:                            
+                
+            if now.hour >= 8 and now.minute >= 35:                              #UPDATED TO >= 8          
                 if not warm_up:
                     self.log(f'Algorithm Warming up...')
                     #if SKIP_WARM_UP is False:
-                    LE, SE = self.parse(path)
-                    #self.log(f'Parsed LE {len(LE)} and SE {len(SE)}')
-                    
-                    arg = self.format_holdings(LE,SE,even_qty)                #Added parameterization for Even Qty Split                           
+                    self.log(f'Reloading long_ok short_ok')  # COULD add this to a block in parse()
+                    self.long_OK = self.get_tickers(min_price = _MIN, max_price = _MAX,etb=False)
+                    self.short_OK = self.get_tickers(min_price = _MIN, max_price = _MAX,etb=True)
+                    l, s = self.parse(path)
+                    self.log(f'Parsed: LE {len(l)} -- SE {len(s)}')
+                    arg = self.format_holdings(l,s,even_qty)                #DONT use globals (LE, SE) -- will reference initial calc, not 8:35 calc                         
                     manager.add_items(arg)
                     
-                    if len(LE) > 0:
-                        self.log(f'Warmup Complete: {dt.datetime.now()}')
-                        warm_up = True
+                    
+                if len(l) > 95:
+                    self.log(f'Warmup Complete: {dt.datetime.now()}')          #Trying this OUTSIDE
+                    warm_up = True                                              #UNCOMMENTED THESE GLOBALS !!
+                    global LE, SE
+                    LE, SE = l, s
+                    
+                else:
+                    self.log(f'Only {len(l)} instruments... skipped entry and resetting long_ok _ short_ok')
+                    #self.long_OK = self.get_tickers(min_price = _MIN, max_price = _MAX,etb=False)
+                    #self.short_OK = self.get_tickers(min_price = _MIN, max_price = _MAX,etb=True)
+                    #break
                         
                         
                        
-            if now.hour == 8 and now.minute >= 35 and warm_up:                 
+            if now.hour >= 8 and now.minute >= 35 and warm_up:                  #UPDATED TO >= 8            
                 self.log('Algorithm Open for Day')
                 open = True
                 
-            elif now.hour == 14 and now.minute == 30 and EOD_EXIT:
+            elif now.hour == 14 and now.minute == 50 and EOD_EXIT:
                 self.log('End Of Day Exit')
                 self.liquidate_all()
                 open = False
@@ -453,7 +476,8 @@ class PortfolioManager():
             if open:
                 self.log(f'Begin Execution: {dt.datetime.now()}')
                 manager.percent_rebalance(order)                                #Paramterized THIS
-                #self.get_fill_data(LE,SE)                                    #Try uncommenting to see if this works 
+                
+                self.get_fill_data()                                    #Try uncommenting to see if this works 
                 #^^ could be too soon after?
                 return 0
             
@@ -542,6 +566,7 @@ class PortfolioManager():
             percent of partial fills today out of total orders.
         '''
         global LE, SE
+
         
         #if dt.datetime.now().hour <= 8 and dt.datetime.now().minute <= 45:
         #    self.log('Check for fill data after 8:45AM')
@@ -549,7 +574,13 @@ class PortfolioManager():
         
         #Total Position Metrics
         n_pos = len(self.api.list_positions())
-        n = len(LE) + len(SE)               
+        n = len(LE) + len(SE) #Replaced w below...
+        if n == 0 or n_pos == 0:  
+            self.log(f'No Active Positions -- No fills')
+            return -1
+        
+
+        
         fill_pct = (n_pos / n) * 100
         
         self.log(f'Number Positions: {n} -- Fills: {fill_pct} %')
@@ -573,44 +604,69 @@ class PortfolioManager():
 ###############################################################################
      
 if __name__ == '__main__':
-    t1 = time.time_ns()
 
+    '''Safety Checks -- Path checks -- other initial tests'''
+    
+    path = '/Users/zoakes/Desktop/rank/rankanalysis_07-31-2020.csv'
+
+    
+    #An Extra Check (If AM, day of -- around Entry time) + not monday
+    t = dt.date.today().weekday()
+    y = dt.datetime.now() - dt.timedelta(days=1)
+    if y.hour < 10 and t != 0:
+        print('Testing CSV...')
+        '''After Holidays - need to comment this'''
+        assert (path[-14:-4] == y.strftime('%m-%d-%Y')) , 'Check that CSV is current date' 
+        
+    try:
+        df = pd.read_csv(path)
+        #print(df.head())
+    except Exception as e:
+        print(f'Error -- Please Check that CSV file is present. \n {e}')
+        sys.exit()
+    finally:
+        print(f'Safety Checks done for file: {path[-27:]}') 
+
+    
     manager = PortfolioManager()
     
-    path = '/Users/zoakes/Desktop/rank/rankanalysis_05-14-2020.csv'
-    
-    #An Extra Check (If AM, day of -- around Entry time)
-    y = dt.datetime.now() - dt.timedelta(days=1)
-    if y.hour < 10:
-        assert (path[-14:-4] == y.strftime('%m-%d-%Y')) , 'Check that CSV is current date' 
-    
-
-    
-    SKIP_WARM_UP = False              #True skips today warmup   
-           
-    if SKIP_WARM_UP is False:
+    SKIP_WARM_UP = True              #True skips today warmup    -- trial to see qty at runtime
+    '''may need to SKIP in order to run a fresh one at 8:30 -- ORRR need to re-initialize! for (long_OK)'''
+    if not SKIP_WARM_UP:
         LE, SE = manager.parse(path)  
-
-    manager.log(f'LE: {len(LE)} \n {LE} \n  SE: {len(SE)} \n {SE}')
+        manager.log(f'LE: {len(LE)} \n {LE} \n  SE: {len(SE)} \n {SE}')
     
-    #arg = manager.format_holdings(LE,SE) #Works -- Add True to split evenly between longs and shorts
-    #print('Short OK:')
-    #print(manager.short_OK)
+
     
     '''
     To Run Algorithm ... 
     
-    1. Check path is to PREVIOUS date
-    2.Confirm manager = PortfolioManager() and manager.run() lines are uncommented
+    1. Check path is to PREVIOUS date csv
+    2. Confirm manager = PortfolioManager() and manager.run() lines are uncommented
     '''
-
+    
 
     manager.run(path,order='send',even_qty=False)  #Only Enters if hour == 8 #Trying BLOCK vs TIMEOUT
+    manager.log('Entry Logic Done running for the day.')
     
-    #manager.liquidate_all()
+    # ----- Tools ----- #
+    #Can use as CLI type command in console ->
     
-    #To check on fills after execution
-    manager.get_fill_data()
+    #Clear ALL positions and orders:
+    #manager.liquidate_all() 
+    
+    #Check on fill data:
+    #manager.get_fill_data()
+    
+    '''
+    Changes -- Recent
+    --  
+    Globals back in -- so fill pct will work -- at ~440
+    OR 461 - 443 (changed to >= 8 not == 8) 
+    
+    '''
+    
+
 
 
     
